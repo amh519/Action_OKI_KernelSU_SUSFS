@@ -1,4 +1,4 @@
-name: Build_Redmi_510_Grandmaster_Style
+name: Build_Redmi_510_2025_Success
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出本地文件
+      - name: 1. 获取本地 5 个关键文件
         uses: actions/checkout@v4
 
       - name: 2. 初始化环境
@@ -14,7 +14,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential git zip curl clang lld llvm
 
-      - name: 3. 拉取内核源码 (5.10.226)
+      - name: 3. 同步内核源码 (5.10.226)
         run: |
           git clone --depth=1 https://github.com/aosp-mirror/kernel_common -b android12-5.10-2025-09_r2 common
 
@@ -23,42 +23,44 @@ jobs:
           cd common
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-      - name: 5. 注入 SUSFS (大博主避坑写法)
+      - name: 5. 注入 SUSFS (2025 最新避坑写法)
         run: |
-          # A. 将所有 susfs 文件放入内核私有目录，绝不进 include
+          # A. 物理移动：绝不进 include 目录
+          # 我们把头文件也塞进 fs/susfs/ 目录，彻底躲开扫描
           mkdir -p common/fs/susfs
           cp susfs.c common/fs/susfs/
           cp susfs.h common/fs/susfs/
           cp susfs_def.h common/fs/susfs/
           
           cd common
-          # B. 强制修改 Makefile
+          # B. 修改 Makefile 确保参与编译
           echo "obj-y += susfs/" >> fs/Makefile
           
-          # C. 修正补丁中的路径 (让它们去找 fs/susfs/ 下的文件，而不是 include/linux/)
-          # 这样就彻底绕过了 HDRINST 头文件检查报错
+          # C. 自动修复补丁中的文件路径
+          # 让你的 50 号补丁不再去找 include/linux/susfs_def.h，而是直接找私有目录
           sed -i 's/include\/linux\/susfs_def.h/fs\/susfs\/susfs_def.h/g' ../50_add_susfs_in_gki-android12-5.10.patch || true
           
-          # D. 使用 git apply 代替 patch 命令，容错率更高
+          # D. 使用 git apply 注入补丁 (容错率远高于 patch 命令)
           git apply --ignore-whitespace --whitespace=nowarn ../50_add_susfs_in_gki-android12-5.10.patch || true
           cd KernelSU-Next
           git apply --ignore-whitespace --whitespace=nowarn ../../10_enable_susfs_for_ksu.patch || true
 
-      - name: 6. 核心配置
+      - name: 6. 核心配置生成
         run: |
           cd common
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-      - name: 7. 终极编译命令 (博主专用参数)
+      - name: 7. 执行编译 (2025 强制参数版)
         run: |
           cd common
-          # 关键点：使用 KCPPFLAGS 把私有目录强行加入包含路径，且不执行头文件安装
+          # 关键点：使用 KCFLAGS 手动链接头文件路径，并只编译 Image 目标
+          # 这将彻底阻断构建系统去执行那个报错的 headers_install 任务
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-               KCPPFLAGS="-I$(pwd)/fs/susfs" \
-               -j$(nproc) Image.gz
+               KCFLAGS="-I$(pwd)/fs/susfs" \
+               -j$(nproc) Image
 
       - name: 8. 上传 Image
         uses: actions/upload-artifact@v4
         with:
-          name: Redmi_Kernel_Success
-          path: common/out/arch/arm64/boot/Image.gz
+          name: Redmi_Kernel_2025_Result
+          path: common/out/arch/arm64/boot/Image

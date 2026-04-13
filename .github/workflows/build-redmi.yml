@@ -1,4 +1,4 @@
-name: Build_Redmi_510_Kernel
+name: Build_Redmi_510_Local
 on:
   workflow_dispatch:
 
@@ -6,44 +6,48 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境初始化
+      - name: 1. 获取仓库文件
         uses: actions/checkout@v4
 
-      - name: 安装编译器
+      - name: 2. 初始化环境
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential git zip curl clang lld llvm
 
-      - name: 拉取内核源码 (5.10-2025-09)
+      - name: 3. 拉取内核源码
         run: |
-          # 针对你的 5.10.226-android12-9 内核
+          # 拉取你指定的 5.10.226 对应分支
           git clone --depth=1 https://github.com/aosp-mirror/kernel_common -b android12-5.10-2025-09_r2 common
 
-      - name: 注入 KSU-Next 和 SUSFS
+      - name: 4. 准备 KSU-Next
         run: |
           cd common
-          # 注入 KSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
-          # 下载 SUSFS 核心文件
-          wget https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel/fs/susfs/susfs.c -P fs/susfs/
-          wget https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel/fs/susfs/susfs.h -P fs/susfs/
-          wget https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel/include/linux/susfs_def.h -P include/linux/
-          # 打补丁
-          wget https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/50_add_susfs_in_gki-android12-5.10.patch
-          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
-          cd KernelSU-Next
-          wget https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/KernelSU/10_enable_susfs_for_ksu.patch
-          patch -p1 < 10_enable_susfs_for_ksu.patch
 
-      - name: 编译
+      - name: 5. 自动打补丁 (使用仓库本地文件)
+        run: |
+          # 复制 susfs 文件到源码对应位置
+          mkdir -p common/fs/susfs
+          cp susfs.c common/fs/susfs/
+          cp susfs.h common/fs/susfs/
+          cp susfs_def.h common/include/linux/
+          
+          # 给内核打补丁 (50号)
+          cd common
+          patch -p1 < ../50_add_susfs_in_gki-android12-5.10.patch
+          
+          # 给 KSU-Next 打补丁 (10号)
+          cd KernelSU-Next
+          patch -p1 < ../../10_enable_susfs_for_ksu.patch
+
+      - name: 6. 编译内核
         run: |
           cd common
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 vendor/gki_defconfig
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 上传
+      - name: 7. 输出 Image
         uses: actions/upload-artifact@v4
         with:
-          name: KSU_Next_SUSFS_Image
+          name: Redmi_Kernel_Result
           path: common/out/arch/arm64/boot/Image
-

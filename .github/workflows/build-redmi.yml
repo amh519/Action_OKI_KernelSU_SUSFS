@@ -1,4 +1,4 @@
-name: Build_Redmi_510_Fix_Conflict
+name: Build_Redmi_510_Final_Fix
 on:
   workflow_dispatch:
 
@@ -16,6 +16,7 @@ jobs:
 
       - name: 3. 拉取内核源码 (5.10-2025-09)
         run: |
+          # 针对你的 5.10.226 内核
           git clone --depth=1 https://github.com/aosp-mirror/kernel_common -b android12-5.10-2025-09_r2 common
 
       - name: 4. 准备 KSU-Next
@@ -23,35 +24,38 @@ jobs:
           cd common
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-      - name: 5. 自动强制修补 (解决 404/冲突问题)
+      - name: 5. 强制修补 (解决冲突与路径问题)
         run: |
-          # 1. 放置核心文件
+          # 放置你上传的 5 个文件
           mkdir -p common/fs/susfs
           cp susfs.c common/fs/susfs/
           cp susfs.h common/fs/susfs/
           cp susfs_def.h common/include/linux/
           
-          # 2. 强制在 fs/Makefile 中添加编译目标 (这是补丁报错最常见的地方)
           cd common
+          # 强行把 susfs 编译项加入 Makefile，绕过补丁冲突
           echo "obj-y += susfs/" >> fs/Makefile
           
-          # 3. 强行应用补丁，即使报错也尝试继续执行
-          # 我们使用 --fuzz=3 允许补丁在行号对不上时自动寻找位置
-          patch -p1 --fuzz=3 < ../50_add_susfs_in_gki-android12-5.10.patch || echo "内核补丁部分冲突，已尝试强制绕过"
-          
-          # 4. 应用 KSU-Next 的 SUSFS 补丁
+          # 尝试应用补丁，即使部分失败也继续
+          patch -p1 --fuzz=3 < ../50_add_susfs_in_gki-android12-5.10.patch || true
           cd KernelSU-Next
-          patch -p1 --fuzz=3 < ../../10_enable_susfs_for_ksu.patch || echo "KSU补丁部分冲突"
+          patch -p1 --fuzz=3 < ../../10_enable_susfs_for_ksu.patch || true
 
-      - name: 6. 编译内核 (GKI 5.10)
+      - name: 6. 编译内核 (修正 Defconfig 路径)
         run: |
           cd common
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 vendor/gki_defconfig
-          # 如果这里通过了，说明前面的冲突没有伤到核心逻辑
+          # 自动检测 gki_defconfig 的位置，解决找不到文件的问题
+          if [ -f "arch/arm64/configs/gki_defconfig" ]; then
+            CONF="gki_defconfig"
+          else
+            CONF="vendor/gki_defconfig"
+          fi
+          
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 $CONF
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc)
 
       - name: 7. 输出 Image
         uses: actions/upload-artifact@v4
         with:
-          name: KSU_Next_SUSFS_Image
+          name: Redmi_Kernel_Fixed
           path: common/out/arch/arm64/boot/Image

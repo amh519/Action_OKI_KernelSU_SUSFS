@@ -1,4 +1,4 @@
-name: Build_Redmi_510_Final_Fix
+name: Build_Redmi_510_Coolapk_Style
 on:
   workflow_dispatch:
 
@@ -6,56 +6,61 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 获取仓库文件
+      - name: 1. 获取仓库本地文件
         uses: actions/checkout@v4
 
-      - name: 2. 初始化环境
+      - name: 2. 初始化编译工具
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential git zip curl clang lld llvm
 
-      - name: 3. 拉取内核源码 (5.10-2025-09)
+      - name: 3. 拉取 5.10.226 源码
         run: |
-          # 针对你的 5.10.226 内核
           git clone --depth=1 https://github.com/aosp-mirror/kernel_common -b android12-5.10-2025-09_r2 common
 
-      - name: 4. 准备 KSU-Next
+      - name: 4. 注入 KernelSU-Next
         run: |
           cd common
+          # 酷安推荐：先注入框架再打补丁
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-      - name: 5. 强制修补 (解决冲突与路径问题)
+      - name: 5. 注入 SUSFS (酷安手动修改逻辑)
         run: |
-          # 放置你上传的 5 个文件
+          # 移动核心文件到源码目录
           mkdir -p common/fs/susfs
           cp susfs.c common/fs/susfs/
           cp susfs.h common/fs/susfs/
           cp susfs_def.h common/include/linux/
           
           cd common
-          # 强行把 susfs 编译项加入 Makefile，绕过补丁冲突
+          # --- 核心操作：不用 patch，改用 sed 直接修改 Makefile ---
+          # 在 fs/Makefile 最后一行添加编译 susfs 的指令
           echo "obj-y += susfs/" >> fs/Makefile
           
-          # 尝试应用补丁，即使部分失败也继续
+          # 在 include/linux/Kbuild 中添加头文件引用
+          echo "header-y += susfs_def.h" >> include/linux/Kbuild
+
+          # 尝试打入补丁，并忽略错误 (补丁只负责修改核心 hooks)
           patch -p1 --fuzz=3 < ../50_add_susfs_in_gki-android12-5.10.patch || true
+          
           cd KernelSU-Next
           patch -p1 --fuzz=3 < ../../10_enable_susfs_for_ksu.patch || true
 
-      - name: 6. 编译内核 (修正 Defconfig 路径)
+      - name: 6. 解决 GKI Defconfig 路径问题
         run: |
           cd common
-          # 自动检测 gki_defconfig 的位置，解决找不到文件的问题
-          if [ -f "arch/arm64/configs/gki_defconfig" ]; then
-            CONF="gki_defconfig"
-          else
-            CONF="vendor/gki_defconfig"
-          fi
-          
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 $CONF
+          # 酷安文章提到的重点：强制指定 GKI 配置
+          export ARCH=arm64
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
+
+      - name: 7. 执行编译
+        run: |
+          cd common
+          # 使用 LLVM 强力编译
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 7. 输出 Image
+      - name: 8. 上传 Image
         uses: actions/upload-artifact@v4
         with:
-          name: Redmi_Kernel_Fixed
+          name: Redmi_Note11T_Kernel
           path: common/out/arch/arm64/boot/Image

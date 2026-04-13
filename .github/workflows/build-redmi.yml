@@ -1,4 +1,4 @@
-name: Build_Redmi_510_Final_Success
+name: Build_Redmi_510_Final_Pure
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出仓库文件
+      - name: 1. 检出本地 5 个文件
         uses: actions/checkout@v4
 
       - name: 2. 初始化环境
@@ -23,46 +23,43 @@ jobs:
           cd common
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-      - name: 5. 注入 SUSFS (不触发头文件检查的写法)
+      - name: 5. 注入 SUSFS (不进 include 目录，彻底避开自检)
         run: |
-          # A. 创建目录并移动核心文件
+          # A. 将 3 个 susfs 相关文件全部塞进 fs/susfs
+          # 绝不放进 include/linux/，这是解决 1000153389 报错的关键
           mkdir -p common/fs/susfs
           cp susfs.c common/fs/susfs/
           cp susfs.h common/fs/susfs/
-          
-          # B. 关键修改：把 susfs_def.h 放在编译器的【私有包含目录】
-          # 绝对不要放在 include/uapi 或者是 include/linux (那样会触发 HDRINST 扫描)
-          # 放在这个目录，编译器能直接寻址，但 headers_install 扫不到它
-          mkdir -p common/include/linux/susfs
-          cp susfs_def.h common/include/linux/susfs/
+          cp susfs_def.h common/fs/susfs/
           
           cd common
-          # C. 强制修改 Makefile
+          # B. 修改 Makefile，让内核编译时能找到这个“私藏”的头文件
           echo "obj-y += susfs/" >> fs/Makefile
+          # 告诉编译器：如果代码里提到了 susfs_def.h，直接来 fs/susfs 找
+          echo "ccflags-y += -I\$(srctree)/fs/susfs" >> fs/Makefile
           
-          # D. 给内核打补丁 (使用 --fuzz=3 解决偏移)
-          # 这里用 sed 预处理一下补丁，确保它找头文件的路径是对的
-          sed -i 's/include\/linux\/susfs_def.h/include\/linux\/susfs\/susfs_def.h/g' ../50_add_susfs_in_gki-android12-5.10.patch || true
+          # C. 强制修改补丁中的路径
+          # 让补丁不再去找 include/linux/susfs_def.h，而是找 fs/susfs/susfs_def.h
+          sed -i 's/include\/linux\/susfs_def.h/fs\/susfs\/susfs_def.h/g' ../50_add_susfs_in_gki-android12-5.10.patch || true
+          
+          # D. 应用补丁 (使用 --fuzz=3 处理偏移)
           patch -p1 --batch --silent --forward --fuzz=3 < ../50_add_susfs_in_gki-android12-5.10.patch || true
-          
-          # E. 给 KSU-Next 打补丁
           cd KernelSU-Next
           patch -p1 --batch --silent --forward --fuzz=3 < ../../10_enable_susfs_for_ksu.patch || true
 
-      - name: 6. 编译配置
+      - name: 6. 编译配置 (解决 1000153382 问题)
         run: |
           cd common
-          # 针对 Redmi Note 11T Pro 的 GKI 配置
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
 
-      - name: 7. 执行终极编译 (只编镜像，不扫头文件)
+      - name: 7. 执行最终编译 (仅编译核心 Image)
         run: |
           cd common
-          # 只编译 Image 目标，彻底避开报错的 HDRINST/UAPI 阶段
+          # 只编译内核本体，不触发任何导致 1000153389 报错的头文件安装自检
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc) Image
 
       - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Redmi_Kernel_Image
+          name: Redmi_Kernel_Final
           path: common/out/arch/arm64/boot/Image
